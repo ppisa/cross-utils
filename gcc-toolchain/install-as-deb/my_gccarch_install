@@ -1,0 +1,194 @@
+#!/bin/bash
+
+BUILD_DIR=`pwd`
+PACKAGE_TYPE=debian
+PACKAGES_DIR=/usr/local/pkg
+PACKAGE_REVISION=1
+
+if [ $# -ge 1 ] ; then
+  PACKAGE_REVISION=$1
+fi
+
+cd ${BUILD_DIR}
+
+if [ -d stage3-gcc ] ; then
+  GCC_CONFIG_STATUS_DIR=stage3-gcc
+else
+  if [ -d gcc ] ; then
+    GCC_CONFIG_STATUS_DIR=gcc
+  else
+    echo Probably not in GCC build directory, no gcc or stage3-gcc there
+    exit 1
+  fi
+fi
+
+TARGET_ARCH=$( sed -n -e 's/^.*--target=\([^ ]*\) .*$/\1/p' config.status )
+TARGET_ARCH=$( echo "$TARGET_ARCH" | head -n 1 )
+
+CONF_VARS="VERSION gcc_version prefix exec_prefix host_alias host_cpu target_alias srcdir"
+CONF_VARS="$CONF_VARS bindir sbindir libdir libexecdir includedir datadir infodir mandir datarootdir"
+
+# S["exec_prefix"]="${prefix}"
+# s,@target_alias@,arm-rtems4.10,;t t
+
+for i in ${CONF_VARS} ; do
+  export ${i}=`sed -n -e "s/^s%@${i}@%\([^ ]*\)%.*\$/\1/p" $GCC_CONFIG_STATUS_DIR/config.status | head -n 1`
+  if [ -z "${!i}" ] ; then
+    export ${i}=`sed -n -e "s/^s,@${i}@,\([^ ]*\),.*\$/\1/p" $GCC_CONFIG_STATUS_DIR/config.status | head -n 1`
+    if [ -z "${!i}" ] ; then
+      export ${i}=`sed -n -e "s/^S\[\"${i}\"\]=\"\([^ ]*\)\"\$/\1/p" $GCC_CONFIG_STATUS_DIR/config.status | head -n 1`
+    fi
+  fi
+done
+
+for i in ${CONF_VARS} ; do
+  export ${i}=`eval echo -n "${!i}"`
+done
+
+for i in ${CONF_VARS} ; do
+  export ${i}=`eval echo -n "${!i}"`
+done
+
+GCC_SRC_DIR=$(cd $GCC_CONFIG_STATUS_DIR && cd $srcdir && pwd)
+
+if [ -z "$VERSION" ] ; then
+  VERSION="$(cat $GCC_SRC_DIR/BASE-VER )"
+fi
+
+if [ -z "$gcc_version" ] ; then
+  gcc_version="$VERSION"
+fi
+
+echo "Prepearation of GCC-${VERSION} package for architecture ${TARGET_ARCH}"
+echo "Target alias=${target_alias} , host alias=${host_alias}, host cpu=${host_cpu}"
+echo "prefix=${prefix}, exec_prefix=${exec_prefix} bindir=${bindir} libdir=${libdir}"
+
+case ${PACKAGE_TYPE} in
+  "debian" )
+    case ${host_cpu} in
+      x86_64 )
+        debian_arch=amd64
+        ;;
+      i[3456]86 )
+        debian_arch=i386
+        ;;
+      * )
+        debian_arch=${host_cpu}
+        ;;
+    esac
+    PACKAGE_DIR=${PACKAGES_DIR}/gcc-${target_alias}_${gcc_version}-${PACKAGE_REVISION}_${debian_arch}
+    ;;
+  * )
+    PACKAGE_DIR=${PACKAGES_DIR}/gcc-${target_alias}-${gcc_version}-${host_cpu}-${PACKAGE_REVISION}
+    ;;
+esac
+
+echo rm -rf ${PACKAGE_DIR}/*
+rm -rf ${PACKAGE_DIR}
+
+echo mkdir -p ${PACKAGE_DIR}
+mkdir -p ${PACKAGE_DIR}
+
+echo make DESTDIR=${PACKAGE_DIR} install
+make DESTDIR=${PACKAGE_DIR} install
+if [ $? -ne 0 ] ; then
+  exit 1
+fi
+
+BIN_DIR=${PACKAGE_DIR}/${bindir}
+LIB_DIR=${PACKAGE_DIR}/${libdir}
+LIBEXEC_DIR=${PACKAGE_DIR}/${libexecdir}
+INCLUDE_DIR=${PACKAGE_DIR}/${includedir}
+DATA_DIR=${PACKAGE_DIR}/${datadir}
+INFO_DIR=${PACKAGE_DIR}/${infodir}
+MAN_DIR=${PACKAGE_DIR}/${mandir}
+#GCC_LIB_DIR=${LIB_DIR}/gcc-lib/${target_alias}/${gcc_version}
+ARCH_DIR=${PACKAGE_DIR}/${prefix}/${target_alias}
+ARCH_GCC_DIR=${ARCH_DIR}/gcc/${gcc_version}
+
+
+echo mkdir -p ${ARCH_GCC_DIR}
+mkdir -p ${ARCH_GCC_DIR}
+
+echo "( cd ${ARCH_GCC_DIR}/.. ; rm -f current ; ln -s ${gcc_version} current ; )"
+( cd ${ARCH_GCC_DIR}/.. ; rm -f current ; ln -s ${gcc_version} current ; )
+
+echo mv -p ${LIB_DIR}/gcc/${target_alias}/${gcc_version} ${ARCH_GCC_DIR}/lib
+mv ${LIB_DIR}/gcc/${target_alias}/${gcc_version} ${ARCH_GCC_DIR}/lib
+
+echo "( cd ${LIB_DIR}/gcc/${target_alias} ; ln -s ../../../${target_alias}/gcc/${gcc_version}/lib ${gcc_version} ; )"
+( cd ${LIB_DIR}/gcc/${target_alias} ; ln -s ../../../${target_alias}/gcc/${gcc_version}/lib ${gcc_version} ; )
+
+echo mv -p ${LIBEXEC_DIR}/gcc/${target_alias}/${gcc_version} ${ARCH_GCC_DIR}/libexec
+mv ${LIBEXEC_DIR}/gcc/${target_alias}/${gcc_version} ${ARCH_GCC_DIR}/libexec
+
+echo "( cd ${LIBEXEC_DIR}/gcc/${target_alias} ; ln -s ../../../${target_alias}/gcc/${gcc_version}/libexec ${gcc_version} ; )"
+( cd ${LIBEXEC_DIR}/gcc/${target_alias} ; ln -s ../../../${target_alias}/gcc/${gcc_version}/libexec ${gcc_version} ; )
+
+echo mkdir -p ${ARCH_GCC_DIR}/bin
+mkdir -p ${ARCH_GCC_DIR}/bin
+
+for i in ${BIN_DIR}/* ; do
+  if [ ! -f $i ] ; then continue ; fi
+  if [ -h $i ] ; then continue ; fi
+  i=`basename $i`
+  case "$i" in 
+    ${target_alias}-*-${gcc_version})
+      f=`echo "$i" | sed "s/${target_alias}-\(.*\)-${gcc_version}/\1/g"`
+      echo "( cd ${BIN_DIR} ; rm $i ; ln -s ../${target_alias}/gcc/${gcc_version}/bin/$f $i ; )"
+      ( cd ${BIN_DIR} ; rm $i ; ln -s ../${target_alias}/gcc/${gcc_version}/bin/$f $i ; )
+      continue
+      ;;
+    ${target_alias}-*)
+      f=`echo "$i" | sed "s/${target_alias}-//g"`
+      ;;
+    *)
+      f=$i
+      ;;
+  esac
+  echo "mv ${BIN_DIR}/$i ${ARCH_GCC_DIR}/bin/$f"
+  mv ${BIN_DIR}/$i ${ARCH_GCC_DIR}/bin/$f
+  echo "( cd ${BIN_DIR} ; ln -s ../${target_alias}/gcc/current/bin/$f $i ; )"
+  ( cd ${BIN_DIR} ; ln -s ../${target_alias}/gcc/current/bin/$f $i ; )
+done
+
+echo "( cd ${ARCH_GCC_DIR}/lib && ln -s ../../../../lib/gcc . )"
+( cd ${ARCH_GCC_DIR}/lib && ln -s ../../../../lib/gcc . )
+
+if [ -e ${ARCH_GCC_DIR}/libexec ] ; then
+  echo "( cd ${ARCH_GCC_DIR}/libexec && ln -s ../../../../libexec/gcc . )"
+  ( cd ${ARCH_GCC_DIR}/libexec && ln -s ../../../../libexec/gcc . )
+fi
+
+echo Compress doc
+( cd ${INFO_DIR} ; gzip *.info* ; )
+for i in man1 man2 man3 man4 man5 man6 man7 man8 ; do
+  d=${MAN_DIR}/$i
+  if [ ! -d $d ] ; then continue ; fi
+  ( cd $d ; gzip *.[0-9] ; )
+done
+
+
+case ${PACKAGE_TYPE} in
+  "debian" )
+    mkdir -p ${PACKAGE_DIR}/DEBIAN
+    echo "Package: gcc-${target_alias}" >${PACKAGE_DIR}/DEBIAN/control
+    echo "Version: ${gcc_version}-${PACKAGE_REVISION}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Architecture: ${debian_arch}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Source: gcc-${gcc_version}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Section: cross-dev" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Priority: extra" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Maintainer: Pavel Pisa <pisa@cmp.felk.cvut.cz>" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Description: GCC for target ${target_alias}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo " ." >>${PACKAGE_DIR}/DEBIAN/control
+    echo " GNU GCC targetting ${target_alias}" >>${PACKAGE_DIR}/DEBIAN/control
+    if [ "${host_alias}" != "${target_alias}" ] ; then
+      echo "rm -rf ${INFO_DIR} ${MAN_DIR} ${LIB_DIR}/libiberty*"
+      rm -rf "${INFO_DIR}" "${MAN_DIR}" "${LIB_DIR}/libiberty"*
+      echo "rmdir --ignore-fail-on-non-empty ${INCLUDE_DIR}"
+      rmdir --ignore-fail-on-non-empty "${INCLUDE_DIR}"
+      echo "rmdir --ignore-fail-on-non-empty ${DATA_DIR}"
+      rmdir --ignore-fail-on-non-empty "${DATA_DIR}"
+    fi
+    ;;
+esac

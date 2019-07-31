@@ -1,0 +1,132 @@
+#!/bin/bash
+
+BUILD_DIR=`pwd`
+PACKAGE_TYPE=debian
+PACKAGES_DIR=/usr/local/pkg
+PACKAGE_NAME=gdb
+PACKAGE_REVISION=1
+
+if [ $# -ge 1 ] ; then
+  PACKAGE_REVISION=$1
+fi
+
+cd ${BUILD_DIR}
+
+TARGET_ARCH=$( sed -n -e 's/^.*--target=\([^ ]*\) .*$/\1/p' config.status )
+TARGET_ARCH=$( echo "$TARGET_ARCH" | head -n 1 )
+
+CONF_VARS="VERSION prefix exec_prefix host_alias host_cpu target_alias"
+CONF_VARS="$CONF_VARS bindir sbindir libdir libexecdir includedir datadir infodir mandir"
+
+for i in ${CONF_VARS} ; do
+  export ${i}=`sed -n -e "s/^S\[\"${i}\"\]=\(.*\)/\1/p" ${PACKAGE_NAME}/config.status`
+  if [ -z "${!i}" ] ; then
+    export ${i}=`sed -n -e "s/^s%@${i}@%\([^ ]*\)%.*\$/\1/p" ${PACKAGE_NAME}/config.status`
+    if [ -z "${!i}" ] ; then
+      export ${i}=`sed -n -e "s/^s,@${i}@,\([^ ]*\),.*\$/\1/p" ${PACKAGE_NAME}/config.status`
+    fi
+  fi
+done
+
+for i in ${CONF_VARS} ; do
+  export ${i}=`eval echo -n "${!i}"`
+done
+
+if [ ${VERSION} = "UNUSED-VERSION" ] ; then
+  VERSION=`sed -n -e 's/^.*version[^a-zA-Z=]*= "\([^"]*\)" *;*$/\1/p' ${PACKAGE_NAME}/version.c`
+fi
+
+echo "Prepearation of ${PACKAGE_NAME}-${VERSION} package for architecture ${TARGET_ARCH}"
+echo "Target alias=${target_alias} , host alias=${host_alias}, host cpu=${host_cpu}"
+echo "Prefix=${prefix}, exec prefix=${exec_prefix} bindir=${bindir} libdir=${libdir}"
+
+case ${PACKAGE_TYPE} in
+  "debian" )
+    case ${host_cpu} in
+      x86_64 )
+        debian_arch=amd64
+        ;;
+      i[3456]86 )
+        debian_arch=i386
+        ;;
+      * )
+        debian_arch=${host_cpu}
+        ;;
+    esac
+    PACKAGE_DIR=${PACKAGES_DIR}/${PACKAGE_NAME}-${target_alias}_${VERSION}-${PACKAGE_REVISION}_${debian_arch}
+    ;;
+  * )
+    PACKAGE_DIR=${PACKAGES_DIR}/${PACKAGE_NAME}-${target_alias}-${VERSION}-${host_cpu}-${PACKAGE_REVISION}
+    ;;
+esac
+
+
+echo rm -rf ${PACKAGE_DIR}/*
+rm -rf ${PACKAGE_DIR}
+
+echo mkdir -p ${PACKAGE_DIR}
+mkdir -p ${PACKAGE_DIR}
+
+echo make DESTDIR=${PACKAGE_DIR} install
+make DESTDIR=${PACKAGE_DIR} install
+if [ $? -ne 0 ] ; then
+  exit 1
+fi
+
+BIN_DIR=${PACKAGE_DIR}/${bindir}
+LIB_DIR=${PACKAGE_DIR}/${libdir}
+INFO_DIR=${PACKAGE_DIR}/${infodir}
+MAN_DIR=${PACKAGE_DIR}/${mandir}
+
+ARCH_DIR=${PACKAGE_DIR}/${prefix}/${target_alias}
+ARCH_BIN_DIR=${ARCH_DIR}/bin
+ARCH_LIB_DIR=${ARCH_DIR}/lib
+
+mkdir -p ${ARCH_BIN_DIR}
+
+for i in ${BIN_DIR}/* ; do
+  if [ ! -f $i ] ; then continue ; fi
+  if [ -h $i ] ; then continue ; fi
+  i=`basename $i`
+  case "$i" in 
+    ${target_alias}-*)
+      f=`echo "$i" | sed "s/${target_alias}-//g"`
+      ;;
+    *)
+      f=$i
+      ;;
+  esac
+  echo "mv ${BIN_DIR}/$i ${ARCH_BIN_DIR}/$f"
+  mv ${BIN_DIR}/$i ${ARCH_BIN_DIR}/$f
+  rm -f ${BIN_DIR}/$i
+  echo "( cd ${BIN_DIR} ; ln -s ../${target_alias}/bin/$f $i ; )"
+  ( cd ${BIN_DIR} ; ln -s ../${target_alias}/bin/$f $i ; )
+done
+
+echo Compress doc
+( cd ${INFO_DIR} ; gzip *.info* ; )
+for i in man1 man2 man3 man4 man5 man6 man7 man8 ; do
+  d=${MAN_DIR}/$i
+  if [ ! -d $d ] ; then continue ; fi
+  ( cd $d ; gzip *.[0-9] ; )
+done
+
+case ${PACKAGE_TYPE} in
+  "debian" )
+    mkdir -p ${PACKAGE_DIR}/DEBIAN
+    echo "Package: ${PACKAGE_NAME}-${target_alias}" >${PACKAGE_DIR}/DEBIAN/control
+    echo "Version: ${VERSION}-${PACKAGE_REVISION}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Architecture: ${debian_arch}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Source: ${PACKAGE_NAME}-${VERSION}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Section: cross-dev" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Priority: extra" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Maintainer: Pavel Pisa <pisa@cmp.felk.cvut.cz>" >>${PACKAGE_DIR}/DEBIAN/control
+    echo "Description: ${PACKAGE_NAME} for target ${target_alias}" >>${PACKAGE_DIR}/DEBIAN/control
+    echo " ." >>${PACKAGE_DIR}/DEBIAN/control
+    echo " ${PACKAGE_NAME} targetting ${target_alias}" >>${PACKAGE_DIR}/DEBIAN/control
+    if [ "${host_alias}" != "${target_alias}" ] ; then
+      echo "rm -rf ${INFO_DIR} ${MAN_DIR} ${LIB_DIR}/libiberty*"
+      rm -rf "${INFO_DIR}" "${MAN_DIR}" "${LIB_DIR}/libiberty"*
+    fi
+    ;;
+esac
