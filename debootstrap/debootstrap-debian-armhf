@@ -1,0 +1,11 @@
+/usr/sbin/debootstrap \
+  --no-merged-usr \
+  --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+  --arch=armhf \
+  --include=debian-keyring,mc,libc6-dev,libstdc++6,busybox,aptitude,etckeeper \
+  buster /srv/nfs/debian-armhf http://ftp.cz.debian.org/debian/
+
+#  --foreign \
+
+# aptitude search '?installed?not(?automatic)' | sed -n -e 's/^i[ \t]\+\([^ \t]*\)[ \t].*$/\1/p' >packages
+# aptitude install `cat packages`
